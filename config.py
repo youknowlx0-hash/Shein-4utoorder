@@ -1,6 +1,6 @@
 # ===== Bot Settings =====
-BOT_TOKEN = "7727357230:AAGl2xQKcX_Y91_NzshJRSU4eTAYfZZVfO8"   # Apna Telegram Bot Token
-ADMIN_ID = 7702942505                # Apna Telegram ID
+BOT_TOKEN = "7727357230:AAGl2xQKcX_Y91_NzshJRSU4eTAYfZZVfO8"   # Telegram bot token
+ADMINS = [7702942505]                # Admin Telegram IDs
 
 # ===== Channels List =====
 CHANNELS = [
@@ -11,3 +11,7 @@ CHANNELS = [
     "@sheinverse22",
     "@sheinverse052"
 ]
+
+# ===== Points Required =====
+POINTS_FOR_VIDEO = 5
+POINTS_FOR_FILE = 10
