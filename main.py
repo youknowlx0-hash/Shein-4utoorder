@@ -1,6 +1,6 @@
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-import sqlite3, os, time, random
+import sqlite3, os
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
@@ -11,22 +11,37 @@ bot = telebot.TeleBot(BOT_TOKEN)
 conn = sqlite3.connect("database.db", check_same_thread=False)
 cursor = conn.cursor()
 
-cursor.execute('''CREATE TABLE IF NOT EXISTS users (
+# Users table
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     referrals INTEGER DEFAULT 0,
-    points INTEGER DEFAULT 0
-)''')
+    points INTEGER DEFAULT 0,
+    dp TEXT
+)
+''')
 
-cursor.execute('''CREATE TABLE IF NOT EXISTS stats (
+# Stats table
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS stats (
     total_users INTEGER DEFAULT 0,
     total_video_unlock INTEGER DEFAULT 0,
     total_file_unlock INTEGER DEFAULT 0
-)''')
+)
+''')
+
+# Items table (admin upload)
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS items (
+    type TEXT PRIMARY KEY,
+    file_id TEXT
+)
+''')
 
 conn.commit()
 
-# ===== CHANNELS LIST =====
-with open("channels.txt","r") as f:
+# ===== CHANNELS =====
+with open("channels.txt", "r") as f:
     CHANNELS = [line.strip() for line in f.readlines() if line.strip()]
 
 # ===== FUNCTIONS =====
@@ -47,13 +62,21 @@ def add_user(user_id):
         cursor.execute("UPDATE stats SET total_users = total_users + 1")
         conn.commit()
 
+def update_user_dp(user_id):
+    photos = bot.get_user_profile_photos(user_id, limit=1)
+    if photos.total_count > 0:
+        file_id = photos.photos[0][0].file_id
+        cursor.execute("UPDATE users SET dp=? WHERE user_id=?", (file_id, user_id))
+        conn.commit()
+
 def add_referral(referrer_id):
     cursor.execute("SELECT points, referrals FROM users WHERE user_id=?", (referrer_id,))
     row = cursor.fetchone()
     if row:
         new_ref = row[1]+1
         new_points = row[0]+1
-        cursor.execute("UPDATE users SET referrals=?, points=? WHERE user_id=?",(new_ref,new_points,referrer_id))
+        cursor.execute("UPDATE users SET referrals=?, points=? WHERE user_id=?",
+                       (new_ref,new_points,referrer_id))
         conn.commit()
         bot.send_message(referrer_id, f"🎉 New referral joined! 💎 +1 Point\nTotal Points: {new_points}")
 
@@ -75,11 +98,50 @@ def unlock_item(user_id, item_type):
     else:
         return False
 
+# ===== DECORATOR =====
+def check_channels(func):
+    """Decorator to ensure user joined all channels before using any feature"""
+    def wrapper(call_or_message, *args, **kwargs):
+        if hasattr(call_or_message, 'from_user'):
+            user_id = call_or_message.from_user.id
+        else:
+            user_id = call_or_message.chat.id
+
+        if not is_joined_all(user_id):
+            if hasattr(call_or_message, 'id'):
+                bot.answer_callback_query(call_or_message.id, "❌ Join all channels first!")
+            else:
+                bot.send_message(user_id, "❌ Join all channels first!", reply_markup=join_channel_buttons())
+            return
+        return func(call_or_message, *args, **kwargs)
+    return wrapper
+
+# ===== BUTTONS =====
+def join_channel_buttons():
+    markup = InlineKeyboardMarkup()
+    for ch in CHANNELS:
+        markup.add(InlineKeyboardButton(f"🔴 Join {ch}", url=f"https://t.me/{ch[1:]}"))
+    return markup
+
+def unlock_buttons():
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🔴 UNLOCK VIDEO (5💎)", callback_data="unlock_video"))
+    markup.add(InlineKeyboardButton("🟢 UNLOCK FILE (10💎)", callback_data="unlock_file"))
+    markup.add(InlineKeyboardButton("🔵 PAID ACCESS", callback_data="paid_access"))
+    return markup
+
+def referral_button(user_id):
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🔗 Copy Referral Link", url=f"https://t.me/{bot.get_me().username}?start={user_id}"))
+    return markup
+
 # ===== COMMANDS =====
 @bot.message_handler(commands=['start'])
+@check_channels
 def start(message):
     user_id = message.from_user.id
     add_user(user_id)
+    update_user_dp(user_id)
 
     args = message.text.split()
     if len(args) > 1:
@@ -90,95 +152,88 @@ def start(message):
         except:
             pass
 
-    if not is_joined_all(user_id):
-        markup = InlineKeyboardMarkup()
-        for ch in CHANNELS:
-            markup.add(InlineKeyboardButton(f"🔴 Join {ch}", url=f"https://t.me/{ch[1:]}"))
-        bot.send_message(user_id, "❌ Join all channels first!", reply_markup=markup)
-        return
-
     points = get_points(user_id)
     bot.send_message(user_id,
-        f"👋 Welcome!\n"
-        f"💎 Your Points: {points}\n"
-        f"📌 Referral Link: https://t.me/{bot.get_me().username}?start={user_id}\n\n"
-        f"Unlock Options:\n"
-        f"🎥 Video - 5 Points\n"
-        f"📁 File - 10 Points\n"
-        f"👑 Full Access - 15 Points"
+        f"👋 Welcome!\n💎 Your Points: {points}\n"
+        f"📌 Referral Link: https://t.me/{bot.get_me().username}?start={user_id}\n\nUnlock Options:",
+        reply_markup=unlock_buttons()
     )
+    bot.send_message(user_id, "Your Referral Link:", reply_markup=referral_button(user_id))
 
 @bot.message_handler(commands=['stats'])
-def show_stats(message):
+@check_channels
+def stats(message):
     cursor.execute("SELECT total_users, total_video_unlock, total_file_unlock FROM stats")
-    row = cursor.fetchone()
-    total_users, video_unlock, file_unlock = row
+    total_users, video_unlock, file_unlock = cursor.fetchone()
     bot.send_message(message.chat.id,
-                     f"📊 Bot Stats:\n"
-                     f"🚀 Total Users: {total_users}\n"
-                     f"🎥 Video Unlocks: {video_unlock}\n"
-                     f"📁 File Unlocks: {file_unlock}")
+                     f"📊 Bot Stats:\n🚀 Users: {total_users}\n🎥 Video Unlocks: {video_unlock}\n📁 File Unlocks: {file_unlock}")
 
 @bot.message_handler(commands=['leaderboard'])
+@check_channels
 def leaderboard(message):
-    cursor.execute("SELECT user_id, points FROM users ORDER BY points DESC LIMIT 10")
+    cursor.execute("SELECT user_id, points, dp FROM users ORDER BY points DESC LIMIT 10")
     rows = cursor.fetchall()
-    text = "🏆 Top 10 Referrals:\n"
     for i,row in enumerate(rows,1):
-        text += f"{i}. User: {row[0]} - Points: {row[1]}\n"
-    bot.send_message(message.chat.id, text)
+        user_id, points, dp = row
+        text = f"{i}. User: {user_id} - Points: {points}"
+        if dp:
+            bot.send_photo(message.chat.id, dp, caption=text)
+        else:
+            bot.send_message(message.chat.id, text)
 
-@bot.message_handler(commands=['addbalance'])
-def add_balance(message):
-    if message.from_user.id != ADMIN_ID: return
-    try:
-        parts = message.text.split()
-        uid = int(parts[1]); pts = int(parts[2])
-        cursor.execute("UPDATE users SET points = points + ? WHERE user_id=?",(pts,uid))
-        conn.commit()
-        bot.send_message(message.chat.id,f"✅ Added {pts} Points to {uid}")
-    except:
-        bot.send_message(message.chat.id,"Usage: /addbalance user_id points")
-
-@bot.message_handler(commands=['removebalance'])
-def remove_balance(message):
-    if message.from_user.id != ADMIN_ID: return
-    try:
-        parts = message.text.split()
-        uid = int(parts[1]); pts = int(parts[2])
-        cursor.execute("SELECT points FROM users WHERE user_id=?", (uid,))
-        current = cursor.fetchone()[0]
-        new_points = max(0, current - pts)
-        cursor.execute("UPDATE users SET points=? WHERE user_id=?", (new_points, uid))
-        conn.commit()
-        bot.send_message(message.chat.id,f"✅ Removed {pts} Points from {uid}")
-    except:
-        bot.send_message(message.chat.id,"Usage: /removebalance user_id points")
-
-# ===== REDEEM =====
-@bot.message_handler(func=lambda m: True)
-def handle_redeem(message):
-    user_id = message.from_user.id
-    text = message.text.lower()
-    if not is_joined_all(user_id):
-        bot.send_message(user_id,"❌ Join all channels first!")
-        return
-
-    pts = get_points(user_id)
-    if "video" in text:
+# ===== CALLBACK HANDLER =====
+@bot.callback_query_handler(func=lambda call: True)
+@check_channels
+def callback_query(call):
+    user_id = call.from_user.id
+    if call.data == "unlock_video":
         if unlock_item(user_id,"video"):
-            bot.send_message(user_id,"🎥 Setup Video Unlocked! ✅")
+            cursor.execute("SELECT file_id FROM items WHERE type='video'")
+            row = cursor.fetchone()
+            if row:
+                bot.send_video(user_id, row[0], protect_content=True, supports_streaming=True)
+            bot.answer_callback_query(call.id, "🎥 Video Unlocked! ✅")
         else:
-            bot.send_message(user_id,f"🚫 Not enough points! You have {pts} Points, need 5")
-    elif "file" in text:
+            bot.answer_callback_query(call.id, "🚫 Not enough points! Need 5💎")
+    elif call.data == "unlock_file":
         if unlock_item(user_id,"file"):
-            bot.send_message(user_id,"📁 Setup File Unlocked! ✅")
+            cursor.execute("SELECT file_id FROM items WHERE type='file'")
+            row = cursor.fetchone()
+            if row:
+                bot.send_document(user_id, row[0], protect_content=True)
+            bot.answer_callback_query(call.id, "📁 File Unlocked! ✅")
         else:
-            bot.send_message(user_id,f"🚫 Not enough points! You have {pts} Points, need 10")
-    elif "paid" in text:
-        bot.send_message(user_id,f"💰 Paid Access:\nContact Admin: @{ADMIN_ID}")
-    else:
-        bot.send_message(user_id,"Use keywords: video, file, paid")
+            bot.answer_callback_query(call.id, "🚫 Not enough points! Need 10💎")
+    elif call.data == "paid_access":
+        bot.answer_callback_query(call.id, f"💰 Paid Access: Contact Admin @{ADMIN_ID}")
+
+# ===== ADMIN UPLOAD =====
+admin_waiting = {}
+
+@bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID)
+def admin_commands(message):
+    global admin_waiting
+    text = message.text.lower()
+    if text.startswith("/addvideo"):
+        admin_waiting['video'] = message.from_user.id
+        bot.send_message(ADMIN_ID, "Send the video to upload for users!")
+    elif text.startswith("/addfile"):
+        admin_waiting['file'] = message.from_user.id
+        bot.send_message(ADMIN_ID, "Send the file/document to upload for users!")
+
+@bot.message_handler(content_types=['video','document'])
+def handle_file_upload(message):
+    global admin_waiting
+    if admin_waiting.get('video') == message.from_user.id and message.content_type == 'video':
+        cursor.execute("REPLACE INTO items (type, file_id) VALUES (?,?)", ("video", message.video.file_id))
+        conn.commit()
+        bot.send_message(ADMIN_ID, "✅ Video uploaded successfully!")
+        del admin_waiting['video']
+    elif admin_waiting.get('file') == message.from_user.id and message.content_type == 'document':
+        cursor.execute("REPLACE INTO items (type, file_id) VALUES (?,?)", ("file", message.document.file_id))
+        conn.commit()
+        bot.send_message(ADMIN_ID, "✅ File uploaded successfully!")
+        del admin_waiting['file']
 
 # ===== RUN BOT =====
 print("Bot Running...")
