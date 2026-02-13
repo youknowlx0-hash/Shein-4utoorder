@@ -6,7 +6,7 @@ ADMIN_ID = 7702942505                # Apna Telegram ID
 CHANNELS = [
     "@Shein_Reward",
     "@SheinStockss",
-    "@SheinRewardsGc"
+    "@SheinRewardsGc",
     "@sheinlinks202",
     "@sheinverse22",
     "@sheinverse052"
